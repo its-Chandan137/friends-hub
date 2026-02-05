@@ -1,0 +1,195 @@
+import React, { useState, useEffect } from 'react';
+import { getSocket } from '../../socket'; // adjust path if needed
+import './Dashboard.scss';
+
+function Dashboard({ user }) {
+  const [meals, setMeals] = useState([]);
+  const [selectedMeal, setSelectedMeal] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+
+  useEffect(() => {
+    const socket = getSocket();
+
+    // Request current meals on mount
+    socket.emit('getMeals');
+
+    socket.on('mealsData', (data) => {
+      console.log('Received meals:', data);
+      setMeals(data);
+    });
+
+    socket.on('rowUpdate', (update) => {
+      setMeals((prev) =>
+        prev.map((item) =>
+          item._id === update.itemId ? { ...item, ...update } : item
+        )
+      );
+    });
+
+    socket.on('error', (err) => {
+      alert(err.message || 'Something went wrong');
+    });
+
+    return () => {
+      socket.off('mealsData');
+      socket.off('rowUpdate');
+      socket.off('error');
+    };
+  }, []);
+
+  const handleAddMeal = () => {
+    setSelectedMeal(null);
+    setShowForm(true);
+  };
+
+  const handleEditMeal = (meal) => {
+    setSelectedMeal(meal);
+    setShowForm(true);
+  };
+
+  const handleSaveMeal = (formData) => {
+    const socket = getSocket();
+
+    if (selectedMeal) {
+      // Update existing
+      socket.emit('unlockRow', {
+        itemId: selectedMeal._id,
+        newData: formData,
+      });
+    } else {
+      // New meal — for now just log (later: emit 'createMeal')
+      console.log('Creating new meal:', formData);
+      // socket.emit('createMeal', { data: formData, section: 'meals' });
+    }
+
+    setShowForm(false);
+  };
+
+  const handleCancel = () => {
+    if (selectedMeal) {
+      // Unlock without saving
+      const socket = getSocket();
+      socket.emit('unlockRow', { itemId: selectedMeal._id });
+    }
+    setShowForm(false);
+  };
+
+  return (
+    <div className="dashboard-container">
+      <h1>Friends Hub – Welcome, {user?.username || 'Guest'}!</h1>
+
+      <section className="meals-section">
+        <div className="section-header">
+          <h2>Meals / Lunch Planner</h2>
+          <button className="add-btn" onClick={handleAddMeal}>
+            + Add New Meal
+          </button>
+        </div>
+
+        <table className="meals-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Dish</th>
+              <th>Assigned To</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {meals.length === 0 ? (
+              <tr>
+                <td colSpan="5" className="empty-message">
+                  No meals yet. Add one!
+                </td>
+              </tr>
+            ) : (
+              meals.map((meal) => (
+                <tr key={meal._id}>
+                  <td>{meal.data?.date || '-'}</td>
+                  <td>{meal.data?.dish || '-'}</td>
+                  <td>{meal.data?.assigned || '-'}</td>
+                  <td
+                    className={`status-cell ${
+                      meal.status === 'Updating' ? 'status-updating' : 'status-updated'
+                    }`}
+                  >
+                    {meal.status}
+                  </td>
+                  <td>
+                    <button
+                      className="edit-btn"
+                      onClick={() => handleEditMeal(meal)}
+                      disabled={meal.status === 'Updating'}
+                    >
+                      Edit
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+
+        {showForm && (
+          <div className="meal-form-modal">
+            <div className="modal-content">
+              <h3>{selectedMeal ? 'Edit Meal' : 'New Meal'}</h3>
+              <MealForm
+                initialData={selectedMeal?.data || {}}
+                onSave={handleSaveMeal}
+                onCancel={handleCancel}
+              />
+            </div>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// Reusable Form Component
+function MealForm({ initialData, onSave, onCancel }) {
+  const [form, setForm] = useState({
+    date: initialData.date || '',
+    dish: initialData.dish || '',
+    assigned: initialData.assigned || '',
+  });
+
+  const handleChange = (e) => {
+    setForm({ ...form, [e.target.name]: e.target.value });
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSave(form);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="meal-form">
+      <div className="form-group">
+        <label>Date</label>
+        <input type="date" name="date" value={form.date} onChange={handleChange} required />
+      </div>
+
+      <div className="form-group">
+        <label>Dish</label>
+        <input type="text" name="dish" value={form.dish} onChange={handleChange} required />
+      </div>
+
+      <div className="form-group">
+        <label>Assigned To</label>
+        <input type="text" name="assigned" value={form.assigned} onChange={handleChange} />
+      </div>
+
+      <div className="form-actions">
+        <button type="submit" className="save-btn">Save</button>
+        <button type="button" className="cancel-btn" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+export default Dashboard;
