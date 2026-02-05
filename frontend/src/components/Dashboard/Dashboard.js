@@ -15,15 +15,44 @@ function Dashboard({ user }) {
 
     socket.on('mealsData', (data) => {
       console.log('Received meals:', data);
-      setMeals(data);
+      // Ensure every item has _id as string
+      const normalized = data.map(item => ({
+        ...item,
+        _id: item._id || item.itemId || '',  // fallback
+      }));
+      setMeals(normalized);
     });
 
     socket.on('rowUpdate', (update) => {
       setMeals((prev) =>
-        prev.map((item) =>
-          item._id === update.itemId ? { ...item, ...update } : item
-        )
+        prev.map((item) => {
+          const currentId = item._id || item.itemId;
+          const updateId = update._id || update.itemId;
+          if (currentId === updateId) {
+            return { ...item, ...update, _id: update._id || currentId };
+          }
+          return item;
+        })
       );
+    });
+
+    socket.on('newMealCreated', (newMeal) => {
+      const normalizedNew = {
+        ...newMeal,
+        _id: newMeal._id || newMeal.itemId || '',
+      };
+      console.log('New meal received:', normalizedNew);
+      setMeals((prev) => {
+        if (prev.some(m => m._id === normalizedNew._id)) return prev;
+        return [...prev, normalizedNew];
+      });
+    });
+
+    socket.on('createSuccess', ({ itemId }) => {
+      console.log('New meal created, auto-unlocking:', itemId);
+      const socket = getSocket();
+      // Auto-unlock the just-created row
+      socket.emit('unlockRow', { itemId });
     });
 
     socket.on('error', (err) => {
@@ -32,6 +61,7 @@ function Dashboard({ user }) {
 
     return () => {
       socket.off('mealsData');
+      socket.off('newMealCreated');
       socket.off('rowUpdate');
       socket.off('error');
     };
@@ -42,9 +72,33 @@ function Dashboard({ user }) {
     setShowForm(true);
   };
 
+  // In handleEditMeal
   const handleEditMeal = (meal) => {
-    setSelectedMeal(meal);
-    setShowForm(true);
+    const itemId = meal._id || meal.itemId;
+    if (!itemId) {
+      console.error('No valid ID found for meal:', meal);
+      alert('Cannot edit: invalid row data');
+      return;
+    }
+
+    console.log('Locking item:', itemId);
+
+    const socket = getSocket();
+    socket.emit('lockRow', { itemId });
+
+    const onLockSuccess = () => {
+      setSelectedMeal({ ...meal, _id: itemId });
+      setShowForm(true);
+      socket.off('lockSuccess', onLockSuccess);
+    };
+
+    const onError = (err) => {
+      alert(err.message || 'Cannot edit right now');
+      socket.off('error', onError);
+    };
+
+    socket.once('lockSuccess', onLockSuccess);
+    socket.once('error', onError);
   };
 
   const handleSaveMeal = (formData) => {
@@ -57,9 +111,13 @@ function Dashboard({ user }) {
         newData: formData,
       });
     } else {
-      // New meal — for now just log (later: emit 'createMeal')
-      console.log('Creating new meal:', formData);
-      // socket.emit('createMeal', { data: formData, section: 'meals' });
+      const socket = getSocket();
+      socket.emit('createMeal', { data: formData });
+      socket.on('mealsData', (data) => {
+        console.log('Received meals Again:', data);
+        setMeals(data);
+      });
+      // Optionally listen for 'createSuccess' if you want to do something after
     }
 
     setShowForm(false);
@@ -104,17 +162,16 @@ function Dashboard({ user }) {
                 </td>
               </tr>
             ) : (
-              meals.map((meal) => (
-                <tr key={meal._id}>
+              meals.map((meal, index) => (
+                <tr key={index}>
                   <td>{meal.data?.date || '-'}</td>
                   <td>{meal.data?.dish || '-'}</td>
                   <td>{meal.data?.assigned || '-'}</td>
-                  <td
-                    className={`status-cell ${
-                      meal.status === 'Updating' ? 'status-updating' : 'status-updated'
-                    }`}
-                  >
+                  <td className={`status-cell ${meal.status === 'Updating' ? 'status-updating' : 'status-updated'}`}>
                     {meal.status}
+                    {meal.status === 'Updating' && meal.lockedByUsername && (
+                      <span> by {meal.lockedByUsername}</span>
+                    )}
                   </td>
                   <td>
                     <button

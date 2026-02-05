@@ -70,6 +70,7 @@ io.on('connection', (socket) => {
 
   ////////////////////lockRow event here////////////////////////////////////////
   socket.on('lockRow', async ({ itemId }) => {
+    console.log('lockRow requested for itemId:', itemId, 'type:', typeof itemId);
     try {
       const item = await Item.findById(itemId);
       if (!item) return socket.emit('error', { message: 'Item not found' });
@@ -85,24 +86,26 @@ io.on('connection', (socket) => {
 
       // Broadcast to all
       io.emit('rowUpdate', {
-        itemId: item._id,
+        _id: item._id.toString(),               // ← add this
         status: item.status,
-        lockedBy: socket.user.id,
-        lockedByUsername: socket.user.username,
+        data: item.data,
+        updatedBy: socket.user.username,
       });
 
       socket.emit('lockSuccess', { itemId });
     } catch (err) {
-      socket.emit('error', { message: 'Lock failed' });
+      console.error('Lock error:', err);
+      socket.emit('error', { message: 'Lock failed: ' + err.message });
     }
   });
 
   ////////////////////unlockRow event here////////////////////////////////////////
   socket.on('unlockRow', async ({ itemId, newData }) => {
     try {
+      
       const item = await Item.findById(itemId);
-      if (!item || item.lockedBy.toString() !== socket.user.id) {
-        return socket.emit('error', { message: 'Not authorized or not locked' });
+      if (!item || !item.lockedBy || item.lockedBy.toString() !== socket.user.id.toString()) {
+        return socket.emit('error', { message: `Not authorized or not locked`});
       }
 
       if (newData) {
@@ -121,18 +124,24 @@ io.on('connection', (socket) => {
         status: item.status,
         data: item.data,
         updatedBy: socket.user.username,
+        lockedByUsername: socket.user.username
       });
 
       socket.emit('unlockSuccess', { itemId });
     } catch (err) {
-      socket.emit('error', { message: 'Unlock failed' });
+      console.error('Unlock failed for itemId:', itemId, err.stack || err.message);
+      socket.emit('error', { message: 'Unlock failed: ' + (err.message || 'Unknown error') });
     }
   });
 
   ///////////////////// Also allow fetching current items (for initial load)/////////////////////////////////////
   socket.on('getMeals', async () => {
-    const meals = await Item.find({ section: 'meals' }).populate('createdBy', 'username');
-    socket.emit('mealsData', meals);
+      const meals = await Item.find({ section: 'meals' }).populate('createdBy', 'username');
+      const normalized = meals.map(m => ({
+        ...m.toObject(),
+        _id: m._id.toString(),
+      }));
+      socket.emit('mealsData', normalized);
   });
 
   // ///////// Create Meal Event Here //////////////////////////////////////
@@ -141,22 +150,27 @@ io.on('connection', (socket) => {
       const newItem = new Item({
         section: 'meals',
         data,
-        status: 'Updating',
-        lockedBy: socket.user.id,
+        status: 'Updated',               // ← change from 'Updating' to 'Updated'
+        lockedBy: socket.user.id,                  // ← no lock after create
         createdBy: socket.user.id,
       });
       await newItem.save();
 
-      io.emit('rowUpdate', {
-        itemId: newItem._id,
-        status: newItem.status,
-        data: newItem.data,
-        createdBy: socket.user.username,
-      });
+      // Broadcast the new completed row
+      const broadcastData = {
+         _id: newItem._id.toString(),           // ← crucial
+         status: newItem.status,
+         data: newItem.data,
+         createdBy: socket.user.username,
+      };
 
-      socket.emit('createSuccess', { itemId: newItem._id });
+      io.emit('newMealCreated', broadcastData);
+      io.emit('rowUpdate', broadcastData);   // optional, but consistent
+
+      socket.emit('createSuccess', { itemId: newItem._id.toString() });
     } catch (err) {
-      socket.emit('error', { message: 'Create failed' });
+        console.error('Create failed:', err);
+        socket.emit('error', { message: 'Create failed: ' + err.message });
     }
   });
 
